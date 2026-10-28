@@ -1,36 +1,61 @@
 # 国寿 e 店自动启动助手
 
-Windows 桌面工具：启动 Microsoft Edge 并打开国寿 e 店扫码入口，用户本人完成扫码后，程序通过页面 URL / 可配置标志判断是否进入登录态，并可跳转到自定义业务页面。
-
-> 本工具不采集账号密码、不读取/导出 Cookie、不绕过二维码、短信或其他身份验证。Edge 使用独立的本地用户数据目录保存会话。请仅在你有权访问的账户和设备上使用。
+Windows + Android 双端工具：Windows 端启动 Microsoft Edge 并打开国寿 e 店；Android 端接收用户主动分享/粘贴的短信文本，在用户确认后通过加密局域网把一次性验证码发送到 Windows。Windows 只尝试填入唯一、明确匹配的验证码输入框，不自动点击登录。
 
 ## 默认入口
 
 https://elearningbluefe.e-chinalife.com/els/learner-studentpc-fe/
 
-## 开发运行
+## Android 端重要说明
 
-```powershell
+Android 16 对通知中的一次性验证码有敏感内容保护。普通通知监听程序可能拿不到验证码原文；短信读取权限也属于受限制权限。因此 Android 首版不申请 READ_SMS、RECEIVE_SMS 或通知访问权限。
+
+使用方法：
+1. 手机上安装 Android APK。
+2. Windows 助手运行后，手机和电脑连接同一个可信 Wi-Fi。
+3. 在 Android 助手中扫描 Windows 窗口的配对二维码。
+4. 在短信应用中选择验证码短信，使用“分享”发送给“国寿验证码助手”；也可复制短信后在助手中粘贴。
+5. 核对识别出的数字验证码，点击“确认并发送到电脑”。
+6. Windows 收到后，只在页面存在唯一明确的验证码输入框时填入；用户检查网页并自行点击登录。
+
+本工具不会读取短信数据库、保存完整短信、上传短信原文或自动提交身份验证。
+
+## Windows 本地开发
+
+\`\`\`powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+.\\.venv\\Scripts\\Activate.ps1
 pip install -r requirements.txt
-python -m playwright install chromium
 python main.py
-```
+\`\`\`
 
-首次启动会提示安装 Playwright 浏览器运行时。应用优先使用本机 Microsoft Edge（Playwright channel=edge）；找不到时提示用户安装 Edge。
+需要安装 Microsoft Edge。Edge 使用应用专用的本地用户数据目录：
+\`%LOCALAPPDATA%\\ChinaLifeEShopAssistant\\edge-profile\`
 
-## 使用
+## Android 本地构建
 
-1. 启动程序并点击“打开登录页面”。
-2. 在弹出的 Edge 窗口中按网站官方流程扫码并完成所有验证。
-3. 本工具监测页面是否离开登录入口；可在“高级设置”中填写明确的登录成功 URL 片段或 DOM 标志。
-4. 登录成功后，如设置了业务页面 URL，程序会导航到该地址。
+使用 JDK 17、Android SDK 35 和 Gradle 8.9：
 
-## 会话目录
+\`\`\`bash
+gradle :app:assembleDebug
+\`\`\`
 
-默认放在用户目录下 `%LOCALAPPDATA%\ChinaLifeEShopAssistant\edge-profile`。不要手动分享此目录，其中可能包含登录会话数据。可在设置中清理个人配置目录（关闭 Edge 后操作）。
+APK 输出：\`app/build/outputs/apk/debug/app-debug.apk\`
 
-## 构建
+## GitHub Actions
 
-GitHub Actions 的 Windows 构建会运行静态语法检查、单元测试，并使用 PyInstaller 产出 EXE。构建产物保存在 Actions 的 Artifacts 中。
+每次推送到 main 后会构建：
+- Windows 桌面程序（PyInstaller onedir EXE 文件夹）
+- Android Debug APK
+- Windows 语法检查及单元测试
+
+在仓库 Actions 的构建记录中下载两个 Artifacts。
+
+## 安全边界
+
+- Android 只接收由用户主动分享或粘贴的短信文本，不监听所有通知。
+- 不保存短信原文；只在内存中提取验证码。
+- 每次 Windows 启动生成新的 256-bit AES-GCM 配对密钥，并通过二维码提供给 Android。
+- 验证码只通过同一局域网传输，载荷使用 AES-GCM 加密并带时间戳/随机 nonce。
+- 配对密钥只保存在手机本地；Windows 程序退出后旧配对失效。
+- 请仅在你有权使用的账户、设备和可信网络中操作。

@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows EXE and Android APK
 
 on:
   push:
@@ -9,7 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  windows:
+    name: Windows EXE and tests
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -34,17 +35,53 @@ jobs:
 
       - name: Package EXE
         run: |
-          pyinstaller --noconfirm --clean --windowed --name ChinaLifeEShopAssistant --collect-all playwright --collect-all PySide6 main.py
+          pyinstaller --noconfirm --clean --windowed --name ChinaLifeEShopAssistant --collect-all playwright --collect-all PySide6 --collect-all cryptography --collect-all qrcode --collect-all PIL main.py
 
       - name: Verify executable
+        shell: pwsh
         run: |
           if (!(Test-Path "dist/ChinaLifeEShopAssistant/ChinaLifeEShopAssistant.exe")) { throw "EXE was not generated" }
           Get-Item "dist/ChinaLifeEShopAssistant/ChinaLifeEShopAssistant.exe" | Format-List Name,Length
 
-      - name: Upload EXE folder
+      - name: Upload Windows EXE folder
         uses: actions/upload-artifact@v4
         with:
           name: ChinaLifeEShopAssistant-Windows-x64
           path: dist/ChinaLifeEShopAssistant/
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    name: Android companion APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChinaLifeOtpAssistant-Android-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
