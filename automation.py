@@ -4,14 +4,11 @@ from typing import Optional
 
 from playwright.sync_api import BrowserContext, Error, Page, Playwright, sync_playwright
 
+from login_entry import click_lock_corner_entry
 from settings import Settings, app_data_dir
-
-DEFAULT_LOGIN_URL = "https://elearningbluefe.e-chinalife.com/els/learner-studentpc-fe/"
 
 
 class BrowserAutomation:
-    """Controls a dedicated Edge profile; never reads cookies or credentials."""
-
     OTP_SELECTORS = [
         'input[autocomplete="one-time-code"]',
         'input[name*="otp" i]',
@@ -59,30 +56,17 @@ class BrowserAutomation:
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.goto(self.settings.login_url, wait_until="domcontentloaded", timeout=60000)
 
-    def check_login(self) -> str:
+    def open_password_login(self) -> str:
         if not self._page or self._page.is_closed():
-            return "closed"
-        try:
-            current_url = self._page.url
-            if self.settings.success_url_contains:
-                return "authenticated" if self.settings.success_url_contains in current_url else "waiting"
-            if self.settings.success_selector:
-                locator = self._page.locator(self.settings.success_selector).first
-                if locator.count() and locator.is_visible(timeout=500):
-                    return "authenticated"
-                return "waiting"
-            login_path = self.settings.login_url.rstrip("/")
-            if current_url.rstrip("/") != login_path and current_url.startswith("https://"):
-                return "authenticated"
-            return "waiting"
-        except Error:
-            return "waiting"
+            self.open_login()
+        assert self._page is not None
+        ok, message = click_lock_corner_entry(self._page)
+        if not ok:
+            raise RuntimeError(message)
+        return message
 
     def fill_otp(self, code: str) -> bool:
-        """Fill only one uniquely identified OTP field; never submit the form."""
-        if not self._page or self._page.is_closed():
-            return False
-        if not code.isdigit() or not 4 <= len(code) <= 8:
+        if not self._page or self._page.is_closed() or not code.isdigit() or not 4 <= len(code) <= 8:
             return False
         try:
             return bool(self._page.evaluate(
@@ -92,16 +76,13 @@ class BrowserAutomation:
                         document.querySelectorAll(selector).forEach((el) => {
                             if (!(el instanceof HTMLInputElement)) return;
                             const type = (el.getAttribute('type') || 'text').toLowerCase();
-                            const visible = !!(el.getClientRects().length);
-                            if (visible && !el.disabled && !el.readOnly &&
+                            if (el.getClientRects().length && !el.disabled && !el.readOnly &&
                                 type !== 'password' && type !== 'hidden') fields.add(el);
                         });
                     }
                     if (fields.size !== 1) return false;
                     const el = [...fields][0];
-                    const setter = Object.getOwnPropertyDescriptor(
-                        HTMLInputElement.prototype, 'value'
-                    ).set;
+                    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
                     setter.call(el, value);
                     el.dispatchEvent(new Event('input', {bubbles: true}));
                     el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -112,6 +93,21 @@ class BrowserAutomation:
             ))
         except Error:
             return False
+
+    def check_login(self) -> str:
+        if not self._page or self._page.is_closed():
+            return "closed"
+        try:
+            url = self._page.url.lower()
+            blocked = ("login", "signin", "sso", "oauth", "auth", "verify", "sms")
+            if self.settings.success_url_contains:
+                return "authenticated" if self.settings.success_url_contains in url else "waiting"
+            if self.settings.success_selector:
+                node = self._page.locator(self.settings.success_selector).first
+                return "authenticated" if node.count() and node.is_visible(timeout=500) else "waiting"
+            return "authenticated" if self._page.url.startswith("https://") and not any(x in url for x in blocked) and self._page.url.rstrip("/") != self.settings.login_url.rstrip("/") else "waiting"
+        except Error:
+            return "waiting"
 
     def navigate(self, url: str) -> None:
         if not self._page or self._page.is_closed():
