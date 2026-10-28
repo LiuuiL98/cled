@@ -1,10 +1,13 @@
 package com.liuuil.cled.mobile;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.util.Log;
 import android.os.Bundle;
 import android.view.ViewGroup;
 import android.text.InputType;
@@ -15,7 +18,6 @@ import android.widget.TextView;
 
 import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
-import com.journeyapps.barcodescanner.CaptureActivity;
 
 import org.json.JSONObject;
 
@@ -36,6 +38,8 @@ import javax.crypto.spec.SecretKeySpec;
 
 public class MainActivity extends Activity {
     private static final String PREFS = "paired_pc";
+    private static final int REQUEST_CAMERA_PERMISSION = 9001;
+    private static final String TAG = "ChinaLifeOtpAssistant";
     private EditText codeInput;
     private TextView status;
     private String host = "";
@@ -174,13 +178,39 @@ public class MainActivity extends Activity {
     }
 
     private void scanPairingQr() {
-        IntentIntegrator integrator = new IntentIntegrator(this);
-        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-        integrator.setPrompt("扫描电脑端显示的配对二维码");
-        integrator.setBeepEnabled(false);
-        integrator.setOrientationLocked(false);
-        integrator.setCaptureActivity(CaptureActivity.class);
-        integrator.initiateScan();
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            status.setText("需要相机权限才能扫描电脑端配对二维码。");
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+            return;
+        }
+        launchPairingScanner();
+    }
+
+    private void launchPairingScanner() {
+        try {
+            IntentIntegrator integrator = new IntentIntegrator(this);
+            integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+            integrator.setPrompt("扫描电脑端显示的配对二维码");
+            integrator.setBeepEnabled(false);
+            integrator.setOrientationLocked(false);
+            // Use the library's default CaptureActivity to avoid a stale/custom activity reference.
+            integrator.initiateScan();
+        } catch (Exception e) {
+            Log.e(TAG, "Unable to launch QR scanner", e);
+            status.setText("无法启动二维码扫描器。请检查相机权限，或重新安装应用。");
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                launchPairingScanner();
+            } else {
+                status.setText("相机权限未授予，无法扫描配对二维码。请在系统应用权限设置中允许相机权限。");
+            }
+        }
     }
 
     @Override
