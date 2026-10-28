@@ -3,18 +3,19 @@ from __future__ import annotations
 from playwright.sync_api import Error
 
 
-# Calibrated against the user's Edge screenshot. Coordinates are relative to
-# the webpage viewport (not the outer Windows screenshot/browser chrome).
-LOCK_X_RATIO = 0.885
-LOCK_Y_RATIO = 0.260
+# Ratios are measured against the webpage viewport, excluding Edge chrome.
+# In the user's full-window screenshot, the folded lock badge center is
+# approximately x=88.5%, y=20.5% of this viewport.
 LOCK_CANDIDATES = (
-    (0.885, 0.260),  # center of the lock badge
-    (0.875, 0.260),
-    (0.895, 0.260),
-    (0.885, 0.245),
-    (0.885, 0.275),
-    (0.895, 0.245),
-    (0.895, 0.275),
+    (0.885, 0.205),
+    (0.875, 0.205),
+    (0.895, 0.205),
+    (0.885, 0.195),
+    (0.885, 0.215),
+    (0.875, 0.215),
+    (0.895, 0.215),
+    (0.875, 0.195),
+    (0.895, 0.195),
 )
 EXPECTED_HOST = "elearningbluefe.e-chinalife.com"
 
@@ -38,9 +39,7 @@ def _password_fields(page) -> int:
 def click_lock_corner_entry(page) -> tuple[bool, str]:
     """
     Automatically switch the verified e-learning login card from QR mode
-    to account/password mode. No user click or per-run coordinate selection
-    is required. A click only counts as successful after a password field
-    is positively detected.
+    to account/password mode. No per-run manual click is required.
     """
     try:
         host = (
@@ -56,7 +55,13 @@ def click_lock_corner_entry(page) -> tuple[bool, str]:
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(350)
         viewport = page.evaluate(
-            "() => ({width: window.innerWidth, height: window.innerHeight})"
+            """() => ({
+                width: window.innerWidth,
+                height: window.innerHeight,
+                dpr: window.devicePixelRatio || 1,
+                visualScale: window.visualViewport ? window.visualViewport.scale : 1,
+                visualOffsetTop: window.visualViewport ? window.visualViewport.offsetTop : 0
+            })"""
         )
         width = int(viewport.get("width") or 0)
         height = int(viewport.get("height") or 0)
@@ -70,44 +75,46 @@ def click_lock_corner_entry(page) -> tuple[bool, str]:
             y = height * y_ratio
             hit = page.evaluate(
                 """({x, y}) => {
-                    const el = document.elementFromPoint(x, y);
-                    if (!el) return null;
-                    const r = el.getBoundingClientRect();
-                    const chain = [];
-                    let node = el;
-                    for (let i = 0; node && i < 4; i++, node = node.parentElement) {
-                        const s = getComputedStyle(node);
-                        chain.push({
-                            tag: node.tagName,
-                            role: node.getAttribute('role') || '',
-                            aria: node.getAttribute('aria-label') || '',
-                            title: node.getAttribute('title') || '',
+                    const stack = document.elementsFromPoint(x, y).slice(0, 5);
+                    const describe = (el) => {
+                        const r = el.getBoundingClientRect();
+                        const s = getComputedStyle(el);
+                        return {
+                            tag: el.tagName,
+                            id: el.id || '',
+                            className: typeof el.className === 'string' ?
+                                el.className.slice(0, 120) : '',
+                            role: el.getAttribute('role') || '',
+                            aria: el.getAttribute('aria-label') || '',
+                            title: el.getAttribute('title') || '',
                             cursor: s.cursor,
-                            className: typeof node.className === 'string' ?
-                                node.className.slice(0, 100) : '',
-                            width: Math.round(node.getBoundingClientRect().width),
-                            height: Math.round(node.getBoundingClientRect().height)
-                        });
-                    }
-                    return {
-                        tag: el.tagName,
-                        cursor: getComputedStyle(el).cursor,
-                        rect: {
-                            x: Math.round(r.x), y: Math.round(r.y),
-                            width: Math.round(r.width), height: Math.round(r.height)
-                        },
-                        chain
+                            pointerEvents: s.pointerEvents,
+                            rect: {
+                                x: Math.round(r.x), y: Math.round(r.y),
+                                width: Math.round(r.width), height: Math.round(r.height)
+                            }
+                        };
                     };
+                    const top = stack[0];
+                    if (!top) return null;
+                    const chain = [];
+                    for (let node = top; node && chain.length < 6; node = node.parentElement) {
+                        chain.push(describe(node));
+                    }
+                    return {top: describe(top), chain, stack: stack.map(describe)};
                 }""",
                 {"x": x, "y": y},
             )
             last_hit = hit
-            tried.append(f"{x_ratio:.3f},{y_ratio:.3f}")
+            tried.append({
+                "ratio": (x_ratio, y_ratio),
+                "hit": hit,
+            })
             if hit is None:
                 continue
 
+            # Use a real mouse click so the site's normal pointer/click handlers run.
             page.mouse.click(x, y)
-            # React/Vue may update the panel after the click event has bubbled.
             for _ in range(8):
                 page.wait_for_timeout(200)
                 if _password_fields(page) == 1:
@@ -116,12 +123,17 @@ def click_lock_corner_entry(page) -> tuple[bool, str]:
                         f"（网页坐标比例 {x_ratio:.3f},{y_ratio:.3f}）"
                     )
 
-        hit_tag = last_hit.get("tag", "无") if last_hit else "无"
-        hit_cursor = last_hit.get("cursor", "无") if last_hit else "无"
+        top = last_hit.get("top", {}) if last_hit else {}
+        chain_text = " > ".join(
+            f"{node.get('tag')}#{node.get('id')}."
+            f"{node.get('className','')[:45]}[cursor={node.get('cursor')}]"
+            for node in (last_hit.get("chain", []) if last_hit else [])
+        )
         return False, (
-            "已自动尝试锁头图标中心及周边位置，但仍未检测到密码输入框；"
-            f"最后命中元素={hit_tag}，cursor={hit_cursor}，"
-            f"网页尺寸={width}×{height}，尝试点={';'.join(tried)}。"
+            "已按全屏截图校准锁头位置并尝试周边点位，但仍未检测到密码输入框。"
+            f"最后命中={top.get('tag','无')}，cursor={top.get('cursor','无')}，"
+            f"元素链={chain_text or '无'}；网页视口={width}×{height}，"
+            f"DPR={viewport.get('dpr')}，visualScale={viewport.get('visualScale')}。"
             "为避免误填，已停止自动登录。"
         )
     except Error as exc:
