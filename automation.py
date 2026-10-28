@@ -61,6 +61,12 @@ class BrowserAutomation:
         if not self._page or self._page.is_closed():
             self.open_login()
         assert self._page is not None
+        try:
+            visible_passwords = self._page.locator('input[type="password"]:visible').count()
+        except Error:
+            visible_passwords = 0
+        if visible_passwords == 1:
+            return "已检测到账号密码表单，无需再次点击锁头入口"
         ok, message = click_lock_corner_entry(self._page)
         if not ok:
             raise RuntimeError(message)
@@ -115,32 +121,28 @@ class BrowserAutomation:
     def submit_login(self) -> bool:
         if not self._page or self._page.is_closed():
             return False
+        candidates = []
+        selector = "button,[role='button'],input[type='submit'],input[type='button']"
         for frame in self._page.frames:
-            candidates = []
-            for selector in ("button", "[role='button']", "input[type='submit']", "input[type='button']"):
+            try:
                 locator = frame.locator(selector)
-                try:
-                    found = locator.evaluate_all(
-                        """els => els.map((el, index) => {
-                            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, '').trim();
-                            const visible = !!el.getClientRects().length &&
-                                getComputedStyle(el).display !== 'none' &&
-                                getComputedStyle(el).visibility !== 'hidden' && !el.disabled;
-                            return {index, text, visible};
-                        })"""
-                    )
-                    for item in found:
-                        if item["visible"] and item["text"] in ("登录", "立即登录", "确认登录"):
-                            candidates.append((selector, item["index"]))
-                except Error:
-                    continue
-            if len(candidates) == 1:
-                selector, index = candidates[0]
-                frame.locator(selector).nth(index).click(timeout=5000)
-                return True
-            if len(candidates) > 1:
-                return False
-        return False
+                found = locator.evaluate_all(
+                    """els => els.map((el, index) => {
+                        const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, '').trim();
+                        const visible = !!el.getClientRects().length &&
+                            getComputedStyle(el).display !== 'none' &&
+                            getComputedStyle(el).visibility !== 'hidden' && !el.disabled;
+                        return {index, text, visible};
+                    }).filter(item => item.visible && ['登录', '立即登录', '确认登录'].includes(item.text))"""
+                )
+                candidates.extend((frame, item["index"]) for item in found)
+            except Error:
+                continue
+        if len(candidates) != 1:
+            return False
+        frame, index = candidates[0]
+        frame.locator(selector).nth(index).click(timeout=5000)
+        return True
 
     def fill_otp(self, code: str) -> bool:
         if not self._page or self._page.is_closed() or not code.isdigit() or not 4 <= len(code) <= 8:
