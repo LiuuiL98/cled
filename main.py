@@ -33,6 +33,7 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.poll)
         self.sms_request_pending = False
         self.sms_request_ticks = 0
+        self.otp_submitted = False
         self.statusBar().showMessage("就绪：先用 Android 助手扫描配对二维码")
 
     def build_ui(self):
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
                 raise RuntimeError("账号密码已填写，但未能唯一识别登录按钮。")
             self.sms_request_pending = True
             self.sms_request_ticks = 0
+            self.otp_submitted = False
             self.timer.start()
             self.start_button.setEnabled(False)
             self.statusBar().showMessage(message + "；账号密码已提交，正在寻找“获取验证码”按钮")
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
             self.otp.setText(code)
             if self.browser.fill_otp(code):
                 if self.browser.submit_login():
+                    self.otp_submitted = True
                     self.statusBar().showMessage("验证码已填写并提交，正在确认登录")
                 else:
                     self.statusBar().showMessage("验证码已填写，但无法唯一识别提交按钮")
@@ -190,7 +193,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage("已收到验证码，但未能唯一识别验证码输入框")
         try:
             result = self.browser.check_login()
-            if result == "authenticated":
+            if result == "authenticated" and self.otp_submitted:
                 self.timer.stop()
                 if self.settings.target_url:
                     self.browser.navigate(self.settings.target_url)
