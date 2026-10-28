@@ -31,6 +31,8 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(800)
         self.timer.timeout.connect(self.poll)
+        self.sms_request_pending = False
+        self.sms_request_ticks = 0
         self.statusBar().showMessage("就绪：先用 Android 助手扫描配对二维码")
 
     def build_ui(self):
@@ -154,13 +156,28 @@ class MainWindow(QMainWindow):
             self.browser.fill_account_credentials(username, password)
             if not self.browser.submit_login():
                 raise RuntimeError("账号密码已填写，但未能唯一识别登录按钮。")
+            self.sms_request_pending = True
+            self.sms_request_ticks = 0
             self.timer.start()
             self.start_button.setEnabled(False)
-            self.statusBar().showMessage(message + "；账号密码已提交，等待短信验证码")
+            self.statusBar().showMessage(message + "；账号密码已提交，正在寻找“获取验证码”按钮")
         except Exception as exc:
             QMessageBox.critical(self, "无法启动自动登录", str(exc))
 
     def poll(self):
+        if self.sms_request_pending:
+            result = self.browser.request_sms_code()
+            if result == "clicked":
+                self.sms_request_pending = False
+                self.statusBar().showMessage("已自动点击“获取验证码”，等待手机收到并转发短信")
+            elif result == "ambiguous":
+                self.sms_request_pending = False
+                self.statusBar().showMessage("页面存在多个“获取验证码”候选项，已停止自动点击，请提供页面截图")
+            else:
+                self.sms_request_ticks += 1
+                if self.sms_request_ticks >= 30:
+                    self.sms_request_pending = False
+                    self.statusBar().showMessage("暂未找到“获取验证码”按钮；请确认短信验证页面已出现")
         code = self.bridge.get_latest_code()
         if code:
             self.otp.setText(code)
