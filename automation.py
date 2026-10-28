@@ -144,6 +144,66 @@ class BrowserAutomation:
         frame.locator(selector).nth(index).click(timeout=5000)
         return True
 
+
+    def request_sms_code(self) -> str:
+        """Click the visible '获取验证码' action once when it is unambiguous."""
+        if not self._page or self._page.is_closed():
+            return "not_found"
+        labels = ("获取验证码", "获取短信验证码", "发送验证码", "发送短信验证码")
+        action_selector = "button,[role='button'],a,input[type='button'],input[type='submit']"
+        matches = []
+        for frame in self._page.frames:
+            for label in labels:
+                try:
+                    locator = frame.locator(action_selector)
+                    found = locator.evaluate_all(
+                        """(els, expected) => els.map((el, index) => {
+                            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '')
+                                .replace(/\\s+/g, '').trim();
+                            const visible = !!el.getClientRects().length &&
+                                getComputedStyle(el).display !== 'none' &&
+                                getComputedStyle(el).visibility !== 'hidden' && !el.disabled;
+                            return {index, text, visible};
+                        }).filter(item => item.visible && item.text === expected)""",
+                        label,
+                    )
+                    matches.extend((frame, action_selector, item["index"], label) for item in found)
+                except Error:
+                    continue
+
+        # If the control is a styled div/span instead of a semantic button, require
+        # a single exact, visible text match across all frames.
+        if not matches:
+            for frame in self._page.frames:
+                for label in labels:
+                    try:
+                        locator = frame.get_by_text(label, exact=True)
+                        visible = []
+                        for index in range(min(locator.count(), 10)):
+                            try:
+                                if locator.nth(index).is_visible():
+                                    visible.append(index)
+                            except Error:
+                                continue
+                        matches.extend((frame, None, index, label) for index in visible)
+                    except Error:
+                        continue
+
+        if not matches:
+            return "not_found"
+        if len(matches) != 1:
+            return "ambiguous"
+
+        frame, selector, index, label = matches[0]
+        try:
+            if selector:
+                frame.locator(selector).nth(index).click(timeout=5000)
+            else:
+                frame.get_by_text(label, exact=True).nth(index).click(timeout=5000)
+            return "clicked"
+        except Error:
+            return "not_found"
+
     def fill_otp(self, code: str) -> bool:
         if not self._page or self._page.is_closed() or not code.isdigit() or not 4 <= len(code) <= 8:
             return False
