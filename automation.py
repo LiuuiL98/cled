@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from playwright.sync_api import BrowserContext, Error, Page, Playwright, sync_playwright
@@ -64,6 +65,82 @@ class BrowserAutomation:
         if not ok:
             raise RuntimeError(message)
         return message
+
+    def _visible_inputs(self):
+        if not self._page or self._page.is_closed():
+            return []
+        return self._page.locator("input").evaluate_all(
+            """els => els.map((el, index) => {
+                const style = getComputedStyle(el);
+                return {
+                    index,
+                    visible: !!el.getClientRects().length && style.display !== 'none' && style.visibility !== 'hidden',
+                    disabled: !!el.disabled,
+                    readOnly: !!el.readOnly,
+                    type: (el.getAttribute('type') || 'text').toLowerCase(),
+                    name: el.getAttribute('name') || '',
+                    id: el.id || '',
+                    placeholder: el.getAttribute('placeholder') || '',
+                    aria: el.getAttribute('aria-label') || '',
+                    autocomplete: el.getAttribute('autocomplete') || ''
+                };
+            })"""
+        )
+
+    def fill_account_credentials(self, username: str, password: str) -> None:
+        if not self._page or self._page.is_closed():
+            raise RuntimeError("登录页面尚未打开。")
+        items = self._visible_inputs()
+        usable = [item for item in items if item["visible"] and not item["disabled"] and not item["readOnly"]]
+        password_fields = [item for item in usable if item["type"] == "password"]
+        if len(password_fields) != 1:
+            raise RuntimeError("没有找到唯一的密码输入框，已停止自动填写。")
+        username_fields = []
+        for item in usable:
+            combined = " ".join(item[k] for k in ("name", "id", "placeholder", "aria", "autocomplete")).lower()
+            if item["type"] in ("text", "email", "tel", "number") and any(
+                token in combined for token in ("user", "account", "mobile", "phone", "login", "账号", "帐号", "账户", "手机号", "工号")
+            ) and not any(token in combined for token in ("otp", "sms", "verify", "验证码", "校验码")):
+                username_fields.append(item)
+        if not username_fields:
+            candidates = [item for item in usable if item["type"] in ("text", "email", "tel", "number")]
+            if len(candidates) == 1:
+                username_fields = candidates
+        if len(username_fields) != 1:
+            raise RuntimeError("没有找到唯一的账号输入框，已停止自动填写。")
+
+        self._page.locator("input").nth(username_fields[0]["index"]).fill(username.strip())
+        self._page.locator("input").nth(password_fields[0]["index"]).fill(password)
+
+    def submit_login(self) -> bool:
+        if not self._page or self._page.is_closed():
+            return False
+        for frame in self._page.frames:
+            candidates = []
+            for selector in ("button", "[role='button']", "input[type='submit']", "input[type='button']"):
+                locator = frame.locator(selector)
+                try:
+                    found = locator.evaluate_all(
+                        """els => els.map((el, index) => {
+                            const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').replace(/\\s+/g, '').trim();
+                            const visible = !!el.getClientRects().length &&
+                                getComputedStyle(el).display !== 'none' &&
+                                getComputedStyle(el).visibility !== 'hidden' && !el.disabled;
+                            return {index, text, visible};
+                        })"""
+                    )
+                    for item in found:
+                        if item["visible"] and item["text"] in ("登录", "立即登录", "确认登录"):
+                            candidates.append((selector, item["index"]))
+                except Error:
+                    continue
+            if len(candidates) == 1:
+                selector, index = candidates[0]
+                frame.locator(selector).nth(index).click(timeout=5000)
+                return True
+            if len(candidates) > 1:
+                return False
+        return False
 
     def fill_otp(self, code: str) -> bool:
         if not self._page or self._page.is_closed() or not code.isdigit() or not 4 <= len(code) <= 8:
