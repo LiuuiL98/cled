@@ -1,189 +1,204 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 
 import qrcode
-from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget
 )
 
 from automation import BrowserAutomation
+from credential_store import load_password, save_password
 from otp_bridge import OTPBridge
 from settings import Settings, settings_path
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
-        self.setWindowTitle("国寿 e 店自动启动助手")
-        self.resize(760, 610)
+        self.setWindowTitle("国寿 e 店自动登录助手")
+        self.resize(800, 690)
         self.settings = Settings.load(settings_path())
-        self.automation = BrowserAutomation(self.settings)
+        self.browser = BrowserAutomation(self.settings)
         self.bridge = OTPBridge()
-        self.pairing_info = self.bridge.start()
-        self._build_ui()
+        self.pairing = self.bridge.start()
+        self.build_ui()
         self.timer = QTimer(self)
-        self.timer.setInterval(1000)
-        self.timer.timeout.connect(self._poll)
-        self.statusBar().showMessage("就绪：先在手机端扫码配对，再打开登录页面")
+        self.timer.setInterval(800)
+        self.timer.timeout.connect(self.poll)
+        self.statusBar().showMessage("就绪：先用 Android 助手扫描配对二维码")
 
-    def _build_ui(self) -> None:
+    def build_ui(self):
         root = QWidget()
         layout = QVBoxLayout(root)
-        title = QLabel("国寿 e 店自动启动助手")
-        title.setStyleSheet("font-size: 22px; font-weight: 650;")
-        subtitle = QLabel("Microsoft Edge · 手机短信验证码协同 · 登录后进入业务页面")
-        subtitle.setStyleSheet("color: #667085;")
+        title = QLabel("国寿 e 店自动登录助手")
+        title.setStyleSheet("font-size:22px;font-weight:650")
         layout.addWidget(title)
-        layout.addWidget(subtitle)
+        layout.addWidget(QLabel("自动进入右上角锁头入口 · 账号密码登录 · 短信验证码自动填写"))
 
         form = QFormLayout()
-        self.login_url = QLineEdit(self.settings.login_url)
-        self.target_url = QLineEdit(self.settings.target_url)
+        self.url = QLineEdit(self.settings.login_url)
+        self.username = QLineEdit(self.settings.username)
+        self.password = QLineEdit()
+        self.password.setEchoMode(QLineEdit.Password)
+        try:
+            self.password.setText(load_password(self.settings.username) or "")
+        except Exception:
+            pass
+        self.target = QLineEdit(self.settings.target_url)
         self.success_url = QLineEdit(self.settings.success_url_contains)
         self.success_selector = QLineEdit(self.settings.success_selector)
-        form.addRow("扫码/密码登录入口", self.login_url)
-        form.addRow("登录后业务页面（可留空）", self.target_url)
-        form.addRow("成功 URL 标志（可选）", self.success_url)
-        form.addRow("成功页面元素 CSS（可选）", self.success_selector)
+        form.addRow("国寿 e 店网址", self.url)
+        form.addRow("登录账号", self.username)
+        form.addRow("登录密码（保存在 Windows 凭据管理器）", self.password)
+        form.addRow("登录后目标网址（可选）", self.target)
+        form.addRow("登录成功 URL 标志（可选）", self.success_url)
+        form.addRow("登录成功页面元素 CSS（可选）", self.success_selector)
         layout.addLayout(form)
 
-        pair_row = QHBoxLayout()
-        self.qr_label = QLabel()
-        self.qr_label.setFixedSize(176, 176)
-        self.qr_label.setAlignment(Qt.AlignCenter)
-        qr_data = qrcode.make(__import__("json").dumps(self.pairing_info, separators=(",", ":")))
+        self.remember = QCheckBox("保存密码到本机 Windows 凭据管理器")
+        self.remember.setChecked(True)
+        layout.addWidget(self.remember)
+
+        row = QHBoxLayout()
+        self.qr = QLabel()
+        self.qr.setFixedSize(176, 176)
+        self.qr.setAlignment(Qt.AlignCenter)
+        image = qrcode.make(json.dumps(self.pairing, separators=(",", ":")))
         buffer = io.BytesIO()
-        qr_data.save(buffer, format="PNG")
+        image.save(buffer, format="PNG")
         pixmap = QPixmap()
         pixmap.loadFromData(buffer.getvalue())
-        self.qr_label.setPixmap(pixmap.scaled(168, 168, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        pair_text = QLabel(
-            f"手机端配对\n\n"
-            f"1. 手机与电脑连接同一 Wi-Fi\n"
-            f"2. 打开 Android 助手，点击“扫描电脑二维码”\n"
-            f"3. 扫描左侧二维码完成本次配对\n\n"
-            f"电脑地址：{self.pairing_info['host']}:{self.pairing_info['port']}\n"
-            f"验证码只在本机和局域网内传输，并使用本次运行生成的密钥加密。"
+        self.qr.setPixmap(pixmap.scaled(168, 168, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        info = QLabel(
+            "Android 配对步骤\n"
+            "1. 手机与电脑连接同一 Wi-Fi\n"
+            "2. 手机助手扫描左侧二维码\n"
+            "3. 手机收到验证码后自动加密发送\n\n"
+            "电脑地址: " + str(self.pairing["host"]) + ":" + str(self.pairing["port"])
         )
-        pair_text.setWordWrap(True)
-        pair_text.setStyleSheet("color: #475467;")
-        pair_row.addWidget(self.qr_label)
-        pair_row.addWidget(pair_text, 1)
-        layout.addLayout(pair_row)
+        info.setWordWrap(True)
+        row.addWidget(self.qr)
+        row.addWidget(info, 1)
+        layout.addLayout(row)
 
-        code_row = QHBoxLayout()
-        self.code_preview = QLineEdit()
-        self.code_preview.setReadOnly(True)
-        self.code_preview.setEchoMode(QLineEdit.Password)
-        self.code_preview.setPlaceholderText("手机确认发送后，验证码会在这里暂存")
-        copy_button = QPushButton("复制验证码")
-        copy_button.clicked.connect(self.copy_code)
-        code_row.addWidget(self.code_preview, 1)
-        code_row.addWidget(copy_button)
-        layout.addLayout(code_row)
+        self.otp = QLineEdit()
+        self.otp.setReadOnly(True)
+        self.otp.setEchoMode(QLineEdit.Password)
+        self.otp.setPlaceholderText("收到的验证码短暂显示在这里")
+        layout.addWidget(self.otp)
 
         note = QLabel(
-            "手机端请从短信应用主动分享短信给助手，核对识别出的验证码后再发送。"
-            "电脑只会尝试填入唯一且明确的验证码输入框，不会自动点击登录。"
+            "程序会点击登录面板右上角锁头，尝试填写唯一账号和密码输入框。"
+            "收到短信后自动填入验证码并点击唯一登录按钮。若遇到额外安全验证或页面结构不唯一，会停止自动操作。"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #475467; background: #f2f4f7; padding: 10px; border-radius: 8px;")
+        note.setStyleSheet("background:#f2f4f7;padding:10px;border-radius:8px")
         layout.addWidget(note)
 
         buttons = QHBoxLayout()
-        self.open_button = QPushButton("打开登录页面")
-        self.open_button.clicked.connect(self.open_login)
-        self.stop_button = QPushButton("关闭自动检测")
-        self.stop_button.clicked.connect(self.stop_monitor)
-        self.save_button = QPushButton("保存设置")
-        self.save_button.clicked.connect(self.save_settings)
-        self.open_site_button = QPushButton("打开网站")
-        self.open_site_button.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(self.login_url.text().strip()))
-        )
-        buttons.addWidget(self.open_button)
-        buttons.addWidget(self.stop_button)
-        buttons.addWidget(self.save_button)
-        buttons.addWidget(self.open_site_button)
+        start = QPushButton("启动自动登录")
+        start.clicked.connect(self.start_login)
+        stop = QPushButton("停止检测")
+        stop.clicked.connect(self.stop_monitor)
+        save = QPushButton("保存设置")
+        save.clicked.connect(self.save_settings)
+        open_site = QPushButton("打开网站")
+        open_site.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(self.url.text().strip())))
+        for button in (start, stop, save, open_site):
+            buttons.addWidget(button)
         layout.addLayout(buttons)
+        self.start_button = start
         self.setCentralWidget(root)
 
-    def save_settings(self) -> bool:
-        login_url = self.login_url.text().strip()
-        target_url = self.target_url.text().strip()
-        if not login_url.startswith("https://"):
-            QMessageBox.warning(self, "设置无效", "登录入口必须是 HTTPS 地址。")
+    def save_settings(self):
+        if not self.url.text().strip().startswith("https://"):
+            QMessageBox.warning(self, "设置无效", "网址必须使用 HTTPS。")
             return False
-        if target_url and not target_url.startswith("https://"):
-            QMessageBox.warning(self, "设置无效", "业务页面必须是 HTTPS 地址。")
+        if self.target.text().strip() and not self.target.text().strip().startswith("https://"):
+            QMessageBox.warning(self, "设置无效", "目标网址必须使用 HTTPS。")
             return False
-        self.settings.login_url = login_url
-        self.settings.target_url = target_url
+        self.settings.login_url = self.url.text().strip()
+        self.settings.target_url = self.target.text().strip()
+        self.settings.username = self.username.text().strip()
         self.settings.success_url_contains = self.success_url.text().strip()
         self.settings.success_selector = self.success_selector.text().strip()
         self.settings.save(settings_path())
-        self.statusBar().showMessage("设置已保存")
+        if self.remember.isChecked() and self.password.text():
+            try:
+                save_password(self.settings.username, self.password.text())
+            except Exception as exc:
+                QMessageBox.warning(self, "密码未保存", str(exc))
         return True
 
-    def open_login(self) -> None:
+    def start_login(self):
         if not self.save_settings():
             return
+        username = self.username.text().strip()
+        password = self.password.text()
+        if not password:
+            try:
+                password = load_password(username) or ""
+            except Exception:
+                password = ""
+        if not username or not password:
+            QMessageBox.warning(self, "缺少登录信息", "请填写账号和密码。")
+            return
         try:
-            self.automation.open_login()
+            message = self.browser.open_password_login()
+            self.browser.fill_account_credentials(username, password)
+            if not self.browser.submit_login():
+                raise RuntimeError("账号密码已填写，但未能唯一识别登录按钮。")
             self.timer.start()
-            self.statusBar().showMessage("已打开 Edge：请在网页中输入账号密码并完成手机验证")
-            self.open_button.setEnabled(False)
+            self.start_button.setEnabled(False)
+            self.statusBar().showMessage(message + "；账号密码已提交，等待短信验证码")
         except Exception as exc:
-            QMessageBox.critical(self, "无法启动 Edge", f"{exc}\n\n请确认已安装 Microsoft Edge。")
+            QMessageBox.critical(self, "无法启动自动登录", str(exc))
 
-    def _poll(self) -> None:
+    def poll(self):
         code = self.bridge.get_latest_code()
         if code:
-            self.code_preview.setText(code)
-            if self.automation.fill_otp(code):
-                self.statusBar().showMessage("验证码已填入唯一匹配的输入框，请检查网页并自行提交")
+            self.otp.setText(code)
+            if self.browser.fill_otp(code):
+                if self.browser.submit_login():
+                    self.statusBar().showMessage("验证码已填写并提交，正在确认登录")
+                else:
+                    self.statusBar().showMessage("验证码已填写，但无法唯一识别提交按钮")
             else:
-                self.statusBar().showMessage("已收到验证码，但未找到唯一验证码输入框；可点击复制后手动粘贴")
+                self.statusBar().showMessage("已收到验证码，但未能唯一识别验证码输入框")
         try:
-            result = self.automation.check_login()
+            result = self.browser.check_login()
             if result == "authenticated":
                 self.timer.stop()
                 if self.settings.target_url:
-                    self.automation.navigate(self.settings.target_url)
-                    self.statusBar().showMessage("检测到登录状态，已打开设置的业务页面")
+                    self.browser.navigate(self.settings.target_url)
+                    self.statusBar().showMessage("登录成功，已进入目标页面")
                 else:
-                    self.statusBar().showMessage("检测到登录状态：当前停留在登录后的页面")
-                self.open_button.setEnabled(True)
+                    self.statusBar().showMessage("检测到登录成功")
+                self.start_button.setEnabled(True)
             elif result == "closed":
                 self.stop_monitor()
-                self.statusBar().showMessage("Edge 已关闭")
         except Exception as exc:
-            self.statusBar().showMessage(f"状态检测暂时不可用：{exc}")
+            self.statusBar().showMessage("状态检测失败: " + str(exc))
 
-    def copy_code(self) -> None:
-        code = self.code_preview.text().strip()
-        if code:
-            QGuiApplication.clipboard().setText(code)
-            self.statusBar().showMessage("验证码已复制到剪贴板")
-
-    def stop_monitor(self) -> None:
+    def stop_monitor(self):
         self.timer.stop()
-        self.open_button.setEnabled(True)
-        self.statusBar().showMessage("自动检测已停止；Edge 不会因此关闭")
+        self.start_button.setEnabled(True)
+        self.statusBar().showMessage("自动检测已停止")
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event):
         self.timer.stop()
-        self.automation.close()
+        self.browser.close()
         self.bridge.stop()
         event.accept()
 
 
-def main() -> int:
+def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ChinaLifeEShopAssistant")
     window = MainWindow()
