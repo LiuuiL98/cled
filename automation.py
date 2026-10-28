@@ -73,50 +73,107 @@ class BrowserAutomation:
         return message
 
     def _visible_inputs(self):
+        """Return usable visible inputs from the page and all of its frames."""
         if not self._page or self._page.is_closed():
             return []
-        return self._page.locator("input").evaluate_all(
-            """els => els.map((el, index) => {
-                const style = getComputedStyle(el);
-                return {
-                    index,
-                    visible: !!el.getClientRects().length && style.display !== 'none' && style.visibility !== 'hidden',
-                    disabled: !!el.disabled,
-                    readOnly: !!el.readOnly,
-                    type: (el.getAttribute('type') || 'text').toLowerCase(),
-                    name: el.getAttribute('name') || '',
-                    id: el.id || '',
-                    placeholder: el.getAttribute('placeholder') || '',
-                    aria: el.getAttribute('aria-label') || '',
-                    autocomplete: el.getAttribute('autocomplete') || ''
-                };
-            })"""
-        )
+        results = []
+        for frame in self._page.frames:
+            try:
+                items = frame.locator("input").evaluate_all(
+                    """els => els.map((el, index) => {
+                        const style = getComputedStyle(el);
+                        const visible = !!el.getClientRects().length &&
+                            style.display !== 'none' && style.visibility !== 'hidden' &&
+                            style.opacity !== '0';
+                        return {
+                            index,
+                            visible,
+                            disabled: !!el.disabled,
+                            readOnly: !!el.readOnly,
+                            type: (el.getAttribute('type') || 'text').toLowerCase(),
+                            name: el.getAttribute('name') || '',
+                            id: el.id || '',
+                            placeholder: el.getAttribute('placeholder') || '',
+                            aria: el.getAttribute('aria-label') || '',
+                            autocomplete: el.getAttribute('autocomplete') || ''
+                        };
+                    })"""
+                )
+                for item in items:
+                    item["frame"] = frame
+                    results.append(item)
+            except Error:
+                continue
+        return results
 
     def fill_account_credentials(self, username: str, password: str) -> None:
         if not self._page or self._page.is_closed():
             raise RuntimeError("登录页面尚未打开。")
-        items = self._visible_inputs()
-        usable = [item for item in items if item["visible"] and not item["disabled"] and not item["readOnly"]]
-        password_fields = [item for item in usable if item["type"] == "password"]
+
+        usable = [
+            item for item in self._visible_inputs()
+            if item["visible"] and not item["disabled"] and not item["readOnly"]
+        ]
+
+        def metadata(item: dict) -> str:
+            return " ".join(
+                item[key] for key in
+                ("name", "id", "placeholder", "aria", "autocomplete")
+            ).lower()
+
+        password_fields = [
+            item for item in usable
+            if item["type"] == "password"
+            or item["autocomplete"].lower() == "current-password"
+            or any(token in metadata(item) for token in ("密码", "password", "passwd"))
+        ]
+        # Avoid mistaking a field labelled "密码提示" or a hidden helper for
+        # the real password control; the visibility filter is applied above.
+        password_fields = [
+            item for item in password_fields
+            if not any(token in metadata(item) for token in ("confirm", "确认密码", "新密码"))
+        ]
         if len(password_fields) != 1:
-            raise RuntimeError("没有找到唯一的密码输入框，已停止自动填写。")
+            raise RuntimeError(
+                f"未能定位唯一密码输入框（可见候选数：{len(password_fields)}），已停止自动填写。"
+            )
+
         username_fields = []
         for item in usable:
-            combined = " ".join(item[k] for k in ("name", "id", "placeholder", "aria", "autocomplete")).lower()
+            combined = metadata(item)
             if item["type"] in ("text", "email", "tel", "number") and any(
-                token in combined for token in ("user", "account", "mobile", "phone", "login", "账号", "帐号", "账户", "手机号", "工号")
-            ) and not any(token in combined for token in ("otp", "sms", "verify", "验证码", "校验码")):
+                token in combined for token in (
+                    "user", "account", "mobile", "phone", "login",
+                    "用户名", "账号", "帐号", "账户", "手机号", "工号"
+                )
+            ) and not any(
+                token in combined for token in
+                ("otp", "sms", "verify", "验证码", "校验码", "密码", "password")
+            ):
                 username_fields.append(item)
+
         if not username_fields:
-            candidates = [item for item in usable if item["type"] in ("text", "email", "tel", "number")]
+            candidates = [
+                item for item in usable
+                if item["type"] in ("text", "email", "tel", "number")
+                and item is not password_fields[0]
+                and not any(
+                    token in metadata(item)
+                    for token in ("otp", "sms", "verify", "验证码", "校验码")
+                )
+            ]
             if len(candidates) == 1:
                 username_fields = candidates
-        if len(username_fields) != 1:
-            raise RuntimeError("没有找到唯一的账号输入框，已停止自动填写。")
 
-        self._page.locator("input").nth(username_fields[0]["index"]).fill(username.strip())
-        self._page.locator("input").nth(password_fields[0]["index"]).fill(password)
+        if len(username_fields) != 1:
+            raise RuntimeError(
+                f"未能定位唯一账号输入框（可见候选数：{len(username_fields)}），已停止自动填写。"
+            )
+
+        username_field = username_fields[0]
+        password_field = password_fields[0]
+        username_field["frame"].locator("input").nth(username_field["index"]).fill(username.strip())
+        password_field["frame"].locator("input").nth(password_field["index"]).fill(password)
 
     def submit_login(self) -> bool:
         if not self._page or self._page.is_closed():
