@@ -26,6 +26,7 @@ class Settings:
     success_url_contains: str = ""
     success_selector: str = ""
     keep_profile: bool = True
+    username: str = ""
 
     @classmethod
     def load(cls, path: Path) -> "Settings":
@@ -38,6 +39,7 @@ class Settings:
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Passwords are never written to this file.
         temporary = path.with_suffix(".tmp")
         temporary.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
