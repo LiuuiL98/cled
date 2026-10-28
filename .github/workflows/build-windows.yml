@@ -35,7 +35,7 @@ jobs:
 
       - name: Package EXE
         run: |
-          pyinstaller --noconfirm --clean --windowed --name ChinaLifeEShopAssistant --collect-all playwright --collect-all PySide6 --collect-all cryptography --collect-all qrcode --collect-all PIL main.py
+          pyinstaller --noconfirm --clean --windowed --name ChinaLifeEShopAssistant --collect-all playwright --collect-all PySide6 --collect-all cryptography --collect-all qrcode --collect-all PIL --collect-all keyring main.py
 
       - name: Verify executable
         shell: pwsh
@@ -66,6 +66,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install Android platform
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
