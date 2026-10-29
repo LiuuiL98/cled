@@ -10,15 +10,15 @@ from playwright.sync_api import Error
 # Playwright mouse coordinates and elementFromPoint both use CSS pixels.
 # Windows 125% scaling is already represented by devicePixelRatio; do NOT
 # multiply the CSS coordinates by DPR a second time.
-LOCK_CENTER = (0.882, 0.202)
+LOCK_CENTER = (0.785, 0.200)
 LOCK_OFFSETS = (
     (0.000, 0.000),
-    (-0.004, 0.000), (0.004, 0.000),
-    (0.000, -0.004), (0.000, 0.004),
-    (-0.004, -0.004), (-0.004, 0.004),
-    (0.004, -0.004), (0.004, 0.004),
-    (-0.008, 0.000), (0.008, 0.000),
-    (0.000, -0.008), (0.000, 0.008),
+    (-0.003, 0.000), (0.003, 0.000),
+    (0.000, -0.003), (0.000, 0.003),
+    (-0.003, -0.003), (-0.003, 0.003),
+    (0.003, -0.003), (0.003, 0.003),
+    (-0.006, 0.000), (0.006, 0.000),
+    (0.000, -0.006), (0.000, 0.006),
 )
 EXPECTED_HOST = "elearningbluefe.e-chinalife.com"
 
