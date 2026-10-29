@@ -12,6 +12,9 @@ from typing import Optional
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+PAIRING_PORT = 39173
+PAIRING_KEY_NAME = "otp_bridge_aes_gcm_key_v1"
+
 
 def detect_lan_ip() -> str:
     """Return the IPv4 address used for the default route without sending data."""
@@ -26,6 +29,27 @@ def detect_lan_ip() -> str:
     finally:
         sock.close()
     return "127.0.0.1"
+
+
+def _load_or_create_pairing_key() -> tuple[bytes, bool]:
+    """Persist the LAN AES key in Windows Credential Manager when available."""
+    try:
+        from credential_store import load_secret, save_secret
+
+        encoded = load_secret(PAIRING_KEY_NAME)
+        if encoded:
+            key = base64.urlsafe_b64decode(encoded + "===")
+            if len(key) == 32:
+                return key, True
+
+        key = AESGCM.generate_key(bit_length=256)
+        token = base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
+        save_secret(PAIRING_KEY_NAME, token)
+        return key, True
+    except Exception:
+        # A non-Windows/dev environment or unavailable Credential Manager
+        # falls back to a fresh key. The QR then has to be scanned again.
+        return AESGCM.generate_key(bit_length=256), False
 
 
 def decode_otp_envelope(key: bytes, envelope: dict) -> str:
@@ -45,15 +69,16 @@ def decode_otp_envelope(key: bytes, envelope: dict) -> str:
 
 
 class OTPBridge:
-    """LAN-only encrypted OTP receiver. A fresh key is generated each launch."""
+    """LAN-only encrypted OTP receiver with a persistent pairing secret/port."""
 
     def __init__(self) -> None:
-        self._key = AESGCM.generate_key(bit_length=256)
+        self._key, self._persistent_key = _load_or_create_pairing_key()
         self._queue: queue.Queue[str] = queue.Queue()
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._seen_nonces: set[str] = set()
         self._nonce_lock = threading.Lock()
+        self._persistent_endpoint = False
 
     def start(self) -> dict:
         bridge = self
@@ -96,7 +121,15 @@ class OTPBridge:
                 except Exception:
                     self._respond(400, {"ok": False, "error": "invalid or expired code"})
 
-        self._server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+        try:
+            self._server = ThreadingHTTPServer(("0.0.0.0", PAIRING_PORT), Handler)
+            self._persistent_endpoint = True
+        except OSError:
+            # An occupied fixed port is unusual; fall back to a temporary port.
+            # The QR will show the new port, and the phone must re-pair once.
+            self._server = ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+            self._persistent_endpoint = False
+
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
@@ -106,6 +139,7 @@ class OTPBridge:
             "host": detect_lan_ip(),
             "port": self._server.server_address[1],
             "key": token,
+            "persistent": bool(self._persistent_key and self._persistent_endpoint),
         }
 
     def get_latest_code(self) -> Optional[str]:

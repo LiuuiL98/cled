@@ -5,7 +5,13 @@ from typing import Optional
 
 from playwright.sync_api import BrowserContext, Error, Page, Playwright, sync_playwright
 
-from login_entry import click_lock_corner_entry
+from login_entry import (
+    begin_lock_position_learning,
+    click_saved_lock_position,
+    clear_manual_lock_click,
+    password_field_count,
+    read_manual_lock_click,
+)
 from settings import Settings, app_data_dir
 
 
@@ -127,7 +133,8 @@ class BrowserAutomation:
     def open_login(self) -> None:
         if self._page and not self._page.is_closed():
             self._page.goto(self.settings.login_url, wait_until="domcontentloaded")
-            self._maximize_browser_window()
+            if self.settings.maximize_edge:
+                self._maximize_browser_window()
             return
         self._playwright = sync_playwright().start()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
@@ -137,7 +144,7 @@ class BrowserAutomation:
                 channel="msedge",
                 headless=False,
                 viewport=None,
-                args=["--start-maximized"],
+                args=[],
             )
         except Error as exc:
             self._playwright.stop()
@@ -148,19 +155,45 @@ class BrowserAutomation:
             ) from exc
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.goto(self.settings.login_url, wait_until="domcontentloaded", timeout=60000)
-        self._maximize_browser_window()
+        if self.settings.maximize_edge:
+            self._maximize_browser_window()
+
+    def begin_lock_position_learning(self) -> None:
+        if not self._page or self._page.is_closed():
+            self.open_login()
+        assert self._page is not None
+        begin_lock_position_learning(self._page)
+
+    def read_lock_position_click(self):
+        if not self._page or self._page.is_closed():
+            return None
+        return read_manual_lock_click(self._page)
+
+    def has_password_form(self) -> bool:
+        return bool(
+            self._page and not self._page.is_closed()
+            and password_field_count(self._page) == 1
+        )
+
+    def clear_lock_position_click(self) -> None:
+        if self._page and not self._page.is_closed():
+            clear_manual_lock_click(self._page)
 
     def open_password_login(self) -> str:
         if not self._page or self._page.is_closed():
             self.open_login()
         assert self._page is not None
-        try:
-            visible_passwords = self._page.locator('input[type="password"]:visible').count()
-        except Error:
-            visible_passwords = 0
-        if visible_passwords == 1:
-            return "已检测到账号密码表单，无需再次点击锁头入口"
-        ok, message = click_lock_corner_entry(self._page)
+        if password_field_count(self._page) == 1:
+            return "已检测到账号密码表单"
+        if not self.settings.has_lock_position:
+            raise RuntimeError(
+                "尚未校准锁头位置。首次运行请在 Edge 页面中手动点击一次右上角锁头。"
+            )
+        ok, message = click_saved_lock_position(
+            self._page,
+            float(self.settings.lock_x_ratio),
+            float(self.settings.lock_y_ratio),
+        )
         if not ok:
             raise RuntimeError(message)
         return message

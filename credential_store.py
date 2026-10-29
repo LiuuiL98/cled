@@ -8,11 +8,11 @@ SERVICE_NAME = "ChinaLifeEShopAssistant"
 
 def _keyring():
     if os.name != "nt":
-        raise RuntimeError("登录密码保存仅支持 Windows 凭据管理器。")
+        raise RuntimeError("凭据保存仅支持 Windows 凭据管理器。")
     import keyring
     backend = keyring.get_keyring()
     if "Windows" not in type(backend).__module__:
-        raise RuntimeError("当前系统未启用 Windows 凭据管理器后端，拒绝将密码保存到普通文件。")
+        raise RuntimeError("当前系统未启用 Windows 凭据管理器后端，拒绝将秘密保存到普通文件。")
     return keyring
 
 
@@ -34,3 +34,15 @@ def delete_password(username: str) -> None:
             _keyring().delete_password(SERVICE_NAME, username.strip())
         except Exception:
             pass
+
+
+def save_secret(account: str, secret: str) -> None:
+    if not account.strip() or not secret:
+        raise ValueError("秘密名称和内容不能为空。")
+    _keyring().set_password(SERVICE_NAME, "secret:" + account.strip(), secret)
+
+
+def load_secret(account: str) -> str | None:
+    if not account.strip():
+        return None
+    return _keyring().get_password(SERVICE_NAME, "secret:" + account.strip())
