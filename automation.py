@@ -33,9 +33,36 @@ class BrowserAutomation:
     def profile_dir(self):
         return app_data_dir() / "edge-profile"
 
+    def _maximize_browser_window(self) -> None:
+        """Maximize the real Edge window through CDP (not just the page viewport)."""
+        if not self._context or not self._page or self._page.is_closed():
+            return
+        session = None
+        try:
+            session = self._context.new_cdp_session(self._page)
+            info = session.send("Browser.getWindowForTarget")
+            window_id = info.get("windowId")
+            if window_id is not None:
+                session.send(
+                    "Browser.setWindowBounds",
+                    {"windowId": window_id, "bounds": {"windowState": "maximized"}},
+                )
+                self._page.wait_for_timeout(500)
+        except Exception:
+            # Some Edge builds may not expose this CDP command; retain normal
+            # window operation and let viewport-relative calibration handle it.
+            pass
+        finally:
+            if session is not None:
+                try:
+                    session.detach()
+                except Exception:
+                    pass
+
     def open_login(self) -> None:
         if self._page and not self._page.is_closed():
             self._page.goto(self.settings.login_url, wait_until="domcontentloaded")
+            self._maximize_browser_window()
             return
         self._playwright = sync_playwright().start()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +83,7 @@ class BrowserAutomation:
             ) from exc
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         self._page.goto(self.settings.login_url, wait_until="domcontentloaded", timeout=60000)
+        self._maximize_browser_window()
 
     def open_password_login(self) -> str:
         if not self._page or self._page.is_closed():
