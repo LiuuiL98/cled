@@ -34,9 +34,76 @@ class BrowserAutomation:
         return app_data_dir() / "edge-profile"
 
     def _maximize_browser_window(self) -> None:
-        """Maximize the real Edge window through CDP (not just the page viewport)."""
+        """Maximize the actual native Edge window, not just the web viewport."""
         if not self._context or not self._page or self._page.is_closed():
             return
+        try:
+            self._page.bring_to_front()
+            self._page.wait_for_timeout(200)
+        except Error:
+            pass
+
+        # Use Win32 for the real top-level Edge window. Browser.setWindowBounds
+        # is not consistently available from a page-target CDP session.
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            SW_MAXIMIZE = 3
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+            user32.GetClassNameW.restype = ctypes.c_int
+            user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+            user32.ShowWindow.restype = wintypes.BOOL
+            user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+            user32.SetForegroundWindow.restype = wintypes.BOOL
+            user32.IsZoomed.argtypes = (wintypes.HWND,)
+            user32.IsZoomed.restype = wintypes.BOOL
+
+            def cls(hwnd) -> str:
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, buf, len(buf))
+                return buf.value
+
+            hwnd = user32.GetForegroundWindow()
+            target_hwnd = hwnd if hwnd and cls(hwnd) == "Chrome_WidgetWin_1" else None
+            if target_hwnd is None:
+                try:
+                    page_title = self._page.title().strip()
+                except Error:
+                    page_title = ""
+                matches = []
+
+                @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                def enum_callback(candidate, _lparam):
+                    if not user32.IsWindowVisible(candidate) or cls(candidate) != "Chrome_WidgetWin_1":
+                        return True
+                    buf = ctypes.create_unicode_buffer(512)
+                    user32.GetWindowTextW(candidate, buf, len(buf))
+                    title = buf.value
+                    if page_title and page_title in title:
+                        matches.insert(0, candidate)
+                    elif "国寿" in title or "e学" in title:
+                        matches.append(candidate)
+                    return True
+
+                user32.EnumWindows(enum_callback, 0)
+                if matches:
+                    target_hwnd = matches[0]
+
+            if target_hwnd:
+                user32.ShowWindow(target_hwnd, SW_MAXIMIZE)
+                user32.SetForegroundWindow(target_hwnd)
+                self._page.wait_for_timeout(600)
+                if user32.IsZoomed(target_hwnd):
+                    return
+        except Exception:
+            pass
+
+        # Keep a browser-protocol fallback for platforms where Win32 is absent.
         session = None
         try:
             session = self._context.new_cdp_session(self._page)
@@ -49,8 +116,6 @@ class BrowserAutomation:
                 )
                 self._page.wait_for_timeout(500)
         except Exception:
-            # Some Edge builds may not expose this CDP command; retain normal
-            # window operation and let viewport-relative calibration handle it.
             pass
         finally:
             if session is not None:

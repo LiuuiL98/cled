@@ -3,24 +3,22 @@ from __future__ import annotations
 from playwright.sync_api import Error
 
 
-# Ratios measured on the supplied native 1920x1080 screenshot:
-# page viewport begins below the Edge toolbar/infobar; the lock badge center
-# is approximately 88.2% from the left and 20.2% from the top.
-#
-# Playwright mouse coordinates and elementFromPoint both use CSS pixels.
-# Windows 125% scaling is already represented by devicePixelRatio; do NOT
-# multiply the CSS coordinates by DPR a second time.
-LOCK_CENTER = (0.785, 0.200)
-LOCK_OFFSETS = (
+EXPECTED_HOST = "elearningbluefe.e-chinalife.com"
+
+# Position relative to the site's own content canvas, not the desktop or
+# entire Edge viewport. The canvas is max-width/layout bounded in the provided
+# screenshot, so this remains stable as the native Edge window changes size.
+LOCK_X_IN_CANVAS = 0.938
+LOCK_Y_IN_CANVAS = 0.200
+OFFSETS = (
     (0.000, 0.000),
     (-0.003, 0.000), (0.003, 0.000),
-    (0.000, -0.003), (0.000, 0.003),
-    (-0.003, -0.003), (-0.003, 0.003),
-    (0.003, -0.003), (0.003, 0.003),
+    (0.000, -0.004), (0.000, 0.004),
+    (-0.003, -0.004), (-0.003, 0.004),
+    (0.003, -0.004), (0.003, 0.004),
     (-0.006, 0.000), (0.006, 0.000),
-    (0.000, -0.006), (0.000, 0.006),
+    (0.000, -0.008), (0.000, 0.008),
 )
-EXPECTED_HOST = "elearningbluefe.e-chinalife.com"
 
 
 def _password_fields(page) -> int:
@@ -40,10 +38,7 @@ def _password_fields(page) -> int:
 
 
 def click_lock_corner_entry(page) -> tuple[bool, str]:
-    """
-    Automatically open account/password login on the known e-learning page.
-    No manual click or per-run calibration is required.
-    """
+    """Automatically click the site's lock corner; no manual selection needed."""
     try:
         host = (
             page.url.split("/", 3)[2].split(":", 1)[0].lower()
@@ -58,113 +53,94 @@ def click_lock_corner_entry(page) -> tuple[bool, str]:
         page.bring_to_front()
         page.evaluate("window.scrollTo(0, 0)")
         page.wait_for_timeout(300)
-
-        metrics = page.evaluate(
+        canvas = page.evaluate(
             """() => {
-                const vv = window.visualViewport;
+                const vw = window.innerWidth, vh = window.innerHeight;
+                const all = [...document.querySelectorAll('body *')];
+                const candidates = [];
+                for (const el of all) {
+                    const r = el.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) continue;
+                    if (r.left < -2 || r.left > 20 || r.top < -2 || r.top > 15) continue;
+                    const minWidth = Math.min(vw * 0.60, 900);
+                    const minHeight = Math.min(vh * 0.55, 400);
+                    if (r.width < minWidth || r.width > vw * 0.97 || r.height < minHeight) continue;
+                    const s = getComputedStyle(el);
+                    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+                    candidates.push({
+                        left:r.left, top:r.top, width:r.width, height:r.height,
+                        area:r.width*r.height, tag:el.tagName, id:el.id || '',
+                        className:typeof el.className === 'string' ? el.className.slice(0,120) : '',
+                        background:s.backgroundColor, backgroundImage:s.backgroundImage !== 'none'
+                    });
+                }
+                candidates.sort((a,b) => b.area-a.area);
                 return {
-                    width: vv ? vv.width : window.innerWidth,
-                    height: vv ? vv.height : window.innerHeight,
-                    offsetLeft: vv ? vv.offsetLeft : 0,
-                    offsetTop: vv ? vv.offsetTop : 0,
-                    innerWidth: window.innerWidth,
-                    innerHeight: window.innerHeight,
-                    dpr: window.devicePixelRatio || 1,
-                    visualScale: vv ? vv.scale : 1,
-                    screenWidth: window.screen.width,
-                    screenHeight: window.screen.height
+                    viewport:{width:vw,height:vh,dpr:window.devicePixelRatio||1},
+                    canvas:candidates[0] || null,
+                    candidateCount:candidates.length,
+                    topCandidates:candidates.slice(0,5)
                 };
             }"""
         )
-        width = float(metrics.get("width") or 0)
-        height = float(metrics.get("height") or 0)
-        offset_left = float(metrics.get("offsetLeft") or 0)
-        offset_top = float(metrics.get("offsetTop") or 0)
-        if width < 500 or height < 350:
-            return False, (
-                f"网页可视区域异常（{width:.0f}×{height:.0f} CSS px），"
-                "已停止点击"
-            )
+        if not canvas or not canvas.get("canvas"):
+            viewport = canvas.get("viewport") if canvas else "未知"
+            return False, f"无法识别国寿 e 学主内容画布，未执行猜测性点击。网页视口={viewport}"
 
+        bounds = canvas["canvas"]
+        vw = float(canvas["viewport"]["width"])
+        vh = float(canvas["viewport"]["height"])
+        # Use container geometry; browser viewport/desktop DPI scaling no longer
+        # multiplies into the target point.
+        base_x = bounds["left"] + bounds["width"] * LOCK_X_IN_CANVAS
+        base_y = bounds["top"] + min(bounds["height"] * LOCK_Y_IN_CANVAS, 120)
         last_hit = None
-        last_ratio = LOCK_CENTER
-        for dx, dy in LOCK_OFFSETS:
-            x_ratio = LOCK_CENTER[0] + dx
-            y_ratio = LOCK_CENTER[1] + dy
-            x = offset_left + width * x_ratio
-            y = offset_top + height * y_ratio
-
+        for dx_ratio, dy_ratio in OFFSETS:
+            x = base_x + bounds["width"] * dx_ratio
+            y = base_y + bounds["height"] * dy_ratio
             hit = page.evaluate(
-                """({x, y}) => {
-                    const stack = document.elementsFromPoint(x, y).slice(0, 6);
-                    const describe = (el) => {
-                        const r = el.getBoundingClientRect();
-                        const s = getComputedStyle(el);
-                        return {
-                            tag: el.tagName,
-                            id: el.id || '',
-                            className: typeof el.className === 'string' ?
-                                el.className.slice(0, 100) : '',
-                            role: el.getAttribute('role') || '',
-                            aria: el.getAttribute('aria-label') || '',
-                            title: el.getAttribute('title') || '',
-                            cursor: s.cursor,
-                            pointerEvents: s.pointerEvents,
-                            rect: {
-                                x: Math.round(r.x), y: Math.round(r.y),
-                                width: Math.round(r.width), height: Math.round(r.height)
-                            }
-                        };
+                """({x,y}) => {
+                    const stack=document.elementsFromPoint(x,y).slice(0,5);
+                    const describe=el=>{
+                        const r=el.getBoundingClientRect(),s=getComputedStyle(el);
+                        return {tag:el.tagName,id:el.id||'',
+                            className:typeof el.className==='string'?el.className.slice(0,100):'',
+                            role:el.getAttribute('role')||'',aria:el.getAttribute('aria-label')||'',
+                            title:el.getAttribute('title')||'',cursor:s.cursor,
+                            rect:{x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
                     };
-                    if (!stack.length) return null;
-                    const chain = [];
-                    for (let node = stack[0]; node && chain.length < 6;
-                         node = node.parentElement) {
-                        chain.push(describe(node));
-                    }
-                    return {
-                        top: describe(stack[0]),
-                        chain,
-                        stack: stack.map(describe)
-                    };
+                    const chain=[];
+                    for(let el=stack[0];el&&chain.length<5;el=el.parentElement) chain.push(describe(el));
+                    return stack.length?{top:describe(stack[0]),chain,stack:stack.map(describe)}:null;
                 }""",
-                {"x": x, "y": y},
+                {"x":x,"y":y},
             )
             last_hit = hit
-            last_ratio = (x_ratio, y_ratio)
             if hit is None:
                 continue
-
-            page.mouse.click(x, y)
+            page.mouse.click(x,y)
             for _ in range(10):
                 page.wait_for_timeout(180)
                 count = _password_fields(page)
                 if count == 1:
                     return True, (
                         "已自动点击右上角锁头并检测到账号密码表单"
-                        f"（视口比例 {x_ratio:.3f},{y_ratio:.3f}）"
+                        f"（主内容画布 {bounds['width']:.0f}×{bounds['height']:.0f} CSS px）"
                     )
                 if count > 1:
-                    return False, (
-                        f"点击后检测到 {count} 个密码输入框，为避免误填已停止"
-                    )
+                    return False, f"点击后检测到 {count} 个密码框，为避免误填已停止"
 
-        top = last_hit.get("top", {}) if last_hit else {}
-        chain_text = " > ".join(
-            f"{node.get('tag')}#{node.get('id')}."
-            f"{node.get('className', '')[:38]}[cursor={node.get('cursor')}]"
-            for node in (last_hit.get("chain", []) if last_hit else [])
+        top=last_hit.get("top",{}) if last_hit else {}
+        chain_text=" > ".join(
+            f"{n.get('tag')}#{n.get('id')}.{n.get('className','')[:35]}[cursor={n.get('cursor')}]"
+            for n in (last_hit.get("chain",[]) if last_hit else [])
         )
         return False, (
-            "已按 1920×1080、Windows 125% 缩放截图自动尝试锁头及周边位置，"
-            "但没有检测到密码输入框。"
-            f"最后命中={top.get('tag', '无')}，cursor={top.get('cursor', '无')}，"
-            f"元素链={chain_text or '无'}；"
-            f"网页视口={width:.0f}×{height:.0f} CSS px，"
-            f"DPR={metrics.get('dpr')}，"
-            f"Edge screen={metrics.get('screenWidth')}×{metrics.get('screenHeight')}，"
-            f"最后尝试比例={last_ratio[0]:.3f},{last_ratio[1]:.3f}。"
-            "为避免误填，已停止自动登录。"
+            "已按网页主内容画布边界尝试锁头及周围位置，但未检测到密码输入框。"
+            f"画布={bounds['width']:.0f}×{bounds['height']:.0f} CSS px，"
+            f"网页视口={vw:.0f}×{vh:.0f} CSS px，DPR={canvas['viewport']['dpr']}；"
+            f"最后命中={top.get('tag','无')}，cursor={top.get('cursor','无')}，"
+            f"元素链={chain_text or '无'}。为避免误填，已停止自动登录。"
         )
     except Error as exc:
         return False, f"锁头入口定位失败：{exc}"
