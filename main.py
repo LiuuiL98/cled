@@ -105,10 +105,10 @@ class MainWindow(QMainWindow):
             else "当前使用临时配对信息；若助手重启，请重新扫描二维码。"
         )
         info = QLabel(
-            "Android 自动短信转发配对步骤\n"
+            "Android 配对步骤\n"
             "1. 手机与电脑连接同一 Wi-Fi\n"
             "2. 手机助手扫描左侧二维码并启用短信接收权限\n"
-            "3. 收到符合格式的中国人寿验证码后自动加密转发\n\n"
+            "3. 手机识别验证码后，按手机端当前流程转发到电脑\n\n"
             "电脑地址: " + str(self.pairing["host"]) + ":" + str(self.pairing["port"]) +
             "\n" + pairing_mode
         )
@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         note = QLabel(
             "首次使用：程序打开 Edge 后，请在网页中手动点击一次右上角锁头。"
             "程序确认密码表单出现后会保存该位置；以后自动点击，不再需要人工操作。"
-            "收到手机自动转发的短信验证码后，程序会自动填入并点击登录。"
+            "收到手机发送到电脑的短信验证码后，程序会自动填入并点击登录。"
             "若遇到额外安全验证或页面结构不唯一，会停止自动操作。"
         )
         note.setWordWrap(True)
