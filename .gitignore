@@ -1,0 +1,10 @@
+.gradle/
+**/build/
+**/.idea/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+dist/
+build/
+*.spec
