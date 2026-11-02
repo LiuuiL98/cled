@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Log;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.text.InputType;
@@ -26,6 +27,7 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 100;
+    private static final int REQUEST_CAMERA_PERMISSION = 101;
     private static final String PREFS = "test_link_preferences";
     private TextView status;
     private TextView pairingStatus;
@@ -113,12 +115,34 @@ public final class MainActivity extends Activity {
     }
 
     private void startQrScan() {
-        IntentIntegrator integrator = new IntentIntegrator(this);
-        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-        integrator.setPrompt("扫描 Windows 测试端窗口中的二维码");
-        integrator.setBeepEnabled(false);
-        integrator.setOrientationLocked(true);
-        integrator.initiateScan();
+        // Request camera access in the host Activity first. This avoids relying only on
+        // the scanner Activity's internal permission flow, which can behave differently
+        // across OEM Android builds.
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA_PERMISSION);
+            return;
+        }
+        launchQrScanner();
+    }
+
+    private void launchQrScanner() {
+        try {
+            IntentIntegrator integrator = new IntentIntegrator(this);
+            integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+            integrator.setPrompt("扫描 Windows 测试端窗口中的二维码");
+            integrator.setBeepEnabled(false);
+            integrator.setOrientationLocked(true);
+            integrator.initiateScan();
+        } catch (RuntimeException ex) {
+            Log.e("GuoshouQr", "Failed to launch QR scanner", ex);
+            String detail = ex.getMessage();
+            if (detail == null || detail.trim().isEmpty()) {
+                detail = ex.getClass().getSimpleName();
+            }
+            updateStatus("扫码器启动失败：" + detail);
+            Toast.makeText(this, "无法启动扫码器，请检查相机权限或设备相机状态", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
@@ -221,6 +245,15 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQUEST_CAMERA_PERMISSION) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                launchQrScanner();
+            } else {
+                updateStatus("相机权限未授予，无法扫描配对二维码");
+                Toast.makeText(this, "需要相机权限才能扫描配对二维码", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (requestCode == REQUEST_PERMISSIONS) updatePermissionStatus();
     }
 
