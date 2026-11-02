@@ -1,7 +1,13 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from lan_test_receiver import TEST_SOURCE, validate_test_payload
+from lan_test_receiver import (
+    TEST_SOURCE,
+    load_or_create_token,
+    validate_test_payload,
+)
 
 
 class LanTestReceiverTests(unittest.TestCase):
@@ -25,6 +31,14 @@ class LanTestReceiverTests(unittest.TestCase):
             with self.subTest(value=value):
                 raw = json.dumps({"source": TEST_SOURCE, "code": value}).encode()
                 self.assertIsNone(validate_test_payload(raw, self.token, self.token))
+
+    def test_token_is_persistent_between_starts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "test-token.txt"
+            first = load_or_create_token(path)
+            second = load_or_create_token(path)
+            self.assertEqual(first, second)
+            self.assertRegex(first, r"^[a-f0-9]{64}$")
 
 
 if __name__ == "__main__":

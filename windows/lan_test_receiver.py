@@ -4,14 +4,36 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import json
+import os
+import re
 import secrets
 import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable
 
 
 TEST_SOURCE = "GUOSHOU_TEST_SIMULATOR"
+TOKEN_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+
+def load_or_create_token(path: Path | None = None) -> str:
+    """Persist a random test-only token in the current Windows user's profile."""
+    if path is None:
+        profile = Path(os.environ.get("APPDATA") or Path.home())
+        path = profile / "GuoshouCodeClipboard" / "test-token.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = path.read_text(encoding="ascii").strip()
+        if TOKEN_PATTERN.fullmatch(existing):
+            return existing
+    except (OSError, UnicodeError):
+        pass
+
+    token = secrets.token_hex(32)
+    path.write_text(token + "\n", encoding="ascii")
+    return token
 
 
 def validate_test_payload(raw: bytes, supplied_token: str, expected_token: str) -> str | None:
@@ -49,7 +71,7 @@ def find_lan_ipv4() -> str:
 
 class LanTestReceiver:
     def __init__(self, on_code: Callable[[str], None], port: int = 8765):
-        self.token = secrets.token_hex(32)
+        self.token = load_or_create_token()
         self.on_code = on_code
         self.port = port
         owner = self
@@ -69,6 +91,9 @@ class LanTestReceiver:
             def do_POST(self):
                 if self.path != "/test-code":
                     self._reply(404, b"not found")
+                    return
+                if self.headers.get_content_type() != "application/json":
+                    self._reply(415, b"json required")
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
