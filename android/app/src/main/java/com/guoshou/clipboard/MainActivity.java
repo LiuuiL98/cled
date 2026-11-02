@@ -2,6 +2,7 @@ package com.guoshou.clipboard;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
@@ -14,6 +15,10 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
 
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
@@ -23,16 +28,13 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 100;
     private static final String PREFS = "test_link_preferences";
     private TextView status;
-    private EditText hostInput;
-    private EditText tokenInput;
+    private TextView pairingStatus;
     private EditText sampleInput;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.TOP);
@@ -46,36 +48,26 @@ public final class MainActivity extends Activity {
         root.addView(title);
 
         TextView intro = new TextView(this);
-        intro.setText("真实短信只在本机匹配并显示通知。下面的联调区只发送你手动填写的模拟短信样本，不会把系统收到的真实短信转发出去。");
+        intro.setText("真实短信只在本机匹配并显示通知。扫码仅用于配置 Windows 测试接收器；联调发送区只发送手动编辑的模拟短信样本。");
         intro.setTextSize(14);
         root.addView(intro);
 
-        addLabel(root, "Windows 电脑地址（IP:端口）");
-        hostInput = new EditText(this);
-        hostInput.setSingleLine(true);
-        hostInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        hostInput.setHint("例如 192.168.1.20:8765");
-        hostInput.setText(prefs.getString("host", ""));
-        root.addView(hostInput);
-
-        addLabel(root, "测试配对令牌");
-        tokenInput = new EditText(this);
-        tokenInput.setSingleLine(true);
-        tokenInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-        tokenInput.setHint("从 Windows 测试接收器复制");
-        tokenInput.setText(prefs.getString("token", ""));
-        root.addView(tokenInput);
-
-        Button save = new Button(this);
-        save.setText("保存测试配对信息");
-        save.setOnClickListener(v -> {
-            prefs.edit()
-                .putString("host", hostInput.getText().toString().trim())
-                .putString("token", tokenInput.getText().toString().trim())
-                .apply();
-            updateStatus("测试配对信息已保存在本机");
+        addLabel(root, "Windows 测试端配对");
+        pairingStatus = new TextView(this);
+        pairingStatus.setTextSize(14);
+        root.addView(pairingStatus);
+        Button scan = new Button(this);
+        scan.setText("扫描 Windows 配对二维码");
+        scan.setOnClickListener(v -> startQrScan());
+        root.addView(scan);
+        Button clearPairing = new Button(this);
+        clearPairing.setText("解除配对");
+        clearPairing.setOnClickListener(v -> {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().clear().apply();
+            updatePairingStatus();
+            updateStatus("已清除本机保存的测试配对信息");
         });
-        root.addView(save);
+        root.addView(clearPairing);
 
         addLabel(root, "模拟短信正文（仅用于联调）");
         sampleInput = new EditText(this);
@@ -98,7 +90,7 @@ public final class MainActivity extends Activity {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView privacy = new TextView(this);
-        privacy.setText("测试通道：HTTP 局域网直连 + 随机令牌。仅用于模拟数据，不是生产级安全传输。不要输入真实验证码或其他敏感信息。");
+        privacy.setText("联调通道仅用于模拟数据：HTTP 局域网直连 + 随机测试令牌。不要在此通道发送真实验证码、密码或其他敏感信息。");
         privacy.setTextSize(12);
         root.addView(privacy);
 
@@ -108,6 +100,7 @@ public final class MainActivity extends Activity {
         root.addView(request);
 
         setContentView(root);
+        updatePairingStatus();
         requestPermissionsIfNeeded();
     }
 
@@ -119,14 +112,68 @@ public final class MainActivity extends Activity {
         root.addView(label);
     }
 
+    private void startQrScan() {
+        IntentIntegrator integrator = new IntentIntegrator(this);
+        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+        integrator.setPrompt("扫描 Windows 测试端窗口中的二维码");
+        integrator.setBeepEnabled(false);
+        integrator.setOrientationLocked(true);
+        integrator.initiateScan();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
+        if (result != null) {
+            if (result.getContents() == null) {
+                updateStatus("已取消扫码");
+            } else {
+                savePairing(result.getContents());
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
+    }
+
+    private void savePairing(String raw) {
+        PairingPayload.PairingInfo info = PairingPayload.parse(raw);
+        if (info == null) {
+            Toast.makeText(this, "二维码无效或不是本测试程序的配对码", Toast.LENGTH_LONG).show();
+            updateStatus("扫码失败：二维码格式或地址校验未通过");
+            return;
+        }
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString("host", info.host)
+            .putInt("port", info.port)
+            .putString("token", info.token)
+            .apply();
+        updatePairingStatus();
+        updateStatus("配对成功，可以发送模拟测试数据");
+        Toast.makeText(this, "Windows 测试端配对成功", Toast.LENGTH_SHORT).show();
+    }
+
+    private void updatePairingStatus() {
+        if (pairingStatus == null) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String host = prefs.getString("host", "");
+        int port = prefs.getInt("port", 0);
+        String token = prefs.getString("token", "");
+        boolean paired = !host.isEmpty() && port > 0 && token.matches("[a-fA-F0-9]{64}");
+        pairingStatus.setText(paired
+            ? "已配对：" + host + ":" + port + "（配置保存在本机）"
+            : "尚未配对，请扫描 Windows 窗口中的二维码");
+    }
+
     private void sendTestCode() {
-        String host = hostInput.getText().toString().trim();
-        String token = tokenInput.getText().toString().trim();
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String host = prefs.getString("host", "");
+        int port = prefs.getInt("port", 0);
+        String token = prefs.getString("token", "");
         String sample = sampleInput.getText().toString();
         String code = SmsTemplateParser.extractCode(sample);
 
-        if (host.isEmpty() || token.isEmpty()) {
-            updateStatus("请先填写 Windows 地址和测试配对令牌");
+        if (host.isEmpty() || port <= 0 || token.isEmpty()) {
+            updateStatus("请先扫描 Windows 配对二维码");
             return;
         }
         if (code == null) {
@@ -134,14 +181,9 @@ public final class MainActivity extends Activity {
             return;
         }
 
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putString("host", host)
-            .putString("token", token)
-            .apply();
-
         updateStatus("正在发送模拟测试数据…");
         networkExecutor.execute(() -> {
-            String result = TestRelayClient.send(host, token, code);
+            String result = TestRelayClient.send(host + ":" + port, token, code);
             runOnUiThread(() -> updateStatus(result));
         });
     }
